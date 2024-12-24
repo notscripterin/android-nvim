@@ -119,8 +119,6 @@ local function get_running_devices(adb)
 	local adb_devices = get_adb_devices(adb)
 	local device_names = get_device_names(adb, adb_devices)
 
-	print(#adb_devices)
-	print(#device_names)
 	for i = 1, #adb_devices do
 		table.insert(devices, {
 			id = trim(adb_devices[i]),
@@ -176,19 +174,37 @@ local function find_main_activity(adb, device_id, application_id)
 end
 
 local function build_and_install(root_dir, gradle, adb, device)
-	local time_passed = 0
-	local timer = vim.uv.new_timer()
-	timer:start(
-		1000,
-		1000,
-		vim.schedule_wrap(function()
-			time_passed = time_passed + 1
-			vim.notify("Building for " .. time_passed .. " seconds.", vim.log.levels.DEBUG, {})
-		end)
-	)
+	local buf = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_set_option_value("modifiable", false, {buf=buf})
+	vim.api.nvim_set_option_value("buftype", 'nofile', {buf=buf})
+	vim.api.nvim_set_option_value("bufhidden", 'wipe', {buf=buf})
 
-	vim.system({ gradle, "assembleDebug" }, { text = true }, vim.schedule_wrap(function(obj)
-		timer:stop()
+	local win = vim.api.nvim_open_win(buf, true, {
+		relative="editor",
+		width=vim.o.columns,
+		height=10,
+		row=vim.o.lines - 9,
+		col=0,
+		style="minimal"
+	})
+
+	local output = {}
+	vim.system({ gradle, "assembleDebug" }, { text = true, stdout = vim.schedule_wrap(function(_, data)
+		if data == nil then
+			return
+		end
+
+		for line in data:gmatch("[^\n]+") do
+			output[#output + 1] = line
+		end
+
+		vim.api.nvim_set_option_value("modifiable", true, {buf=buf})
+		vim.api.nvim_buf_set_lines(buf, 0, -1, false, output)
+		vim.api.nvim_set_option_value("modifiable", false, {buf=buf})
+
+		local buffer_lines = vim.api.nvim_buf_line_count(buf)
+		vim.api.nvim_win_set_cursor(win, {buffer_lines, 0})
+	end)}, vim.schedule_wrap(function(obj)
 		if obj.code ~= 0 then
 			vim.notify("Build failed.", vim.log.levels.ERROR, {})
 			return
@@ -223,6 +239,8 @@ local function build_and_install(root_dir, gradle, adb, device)
 		end
 
 		vim.notify("Successfully built and launched the application!", vim.log.levels.INFO, {})
+
+		vim.api.nvim_win_close(win, true)
 	end))
 end
 
@@ -246,7 +264,6 @@ local function build_and_run()
 		return
 	end
 
-	print(running_devices[1].name)
 	vim.ui.select(running_devices, {
 		prompt = "Select device to run on",
 		format_item = function(item)
@@ -258,6 +275,52 @@ local function build_and_run()
 			build_and_install(gradlew.cwd, gradlew.gradlew, adb, choice)
 		else
 			vim.notify("Build cancelled.", vim.log.levels.WARN, {})
+		end
+	end)
+end
+
+local function uninstall()
+	local gradlew = find_gradlew()
+	if gradlew == nil then
+		vim.notify("Uninstall failed: gradlew is not found.", vim.log.levels.ERROR, {})
+		return
+	end
+
+	local application_id = find_application_id(gradlew.cwd)
+	if gradlew == nil then
+		vim.notify("Uninstall failed: could not find application id.", vim.log.levels.ERROR, {})
+		return
+	end
+
+	local android_sdk = vim.fn.expand(vim.fn.expand(vim.env.ANDROID_HOME or vim.g.android_sdk))
+	if android_sdk == nil or #android_sdk == 0 then
+		vim.notify("Android SDK is not defined.", vim.log.levels.ERROR, {})
+		return
+	end
+
+	local adb = android_sdk .. "/platform-tools/adb"
+	local running_devices = get_running_devices(adb)
+	if #running_devices == 0 then
+		vim.notify("Uninstall failed: no devices are running.", vim.log.levels.WARN, {})
+		return
+	end
+
+	vim.ui.select(running_devices, {
+		prompt = "Select device to uninstall from",
+		format_item = function(item)
+			return item.name
+		end,
+	}, function(choice)
+		if choice then
+			vim.notify("Device selected: " .. choice.name, vim.log.levels.INFO, {})
+			local uninstall_obj = vim.system({adb, "-s", choice.id, "uninstall", application_id}, {}):wait()
+			if uninstall_obj.code == 0 then
+				vim.notify("Uninstall successful.", vim.log.levels.INFO, {})
+			else
+				vim.notify("Uninstall failed: " .. uninstall_obj.stderr, vim.log.levels.ERROR, {})
+			end
+		else
+			vim.notify("Uninstall cancelled.", vim.log.levels.WARN, {})
 		end
 	end)
 end
@@ -295,6 +358,23 @@ local function launch_avd()
 	end)
 end
 
+local function refresh_dependencies()
+	local gradlew = find_gradlew()
+	if gradlew == nil then
+		vim.notify("Refreshing dependencies failed, not able to find gradlew", vim.log.levels.ERROR, {})
+		return
+	end
+
+	vim.notify("Refreshing dependencies", vim.log.levels.INFO, {})
+	vim.system({gradlew.gradlew, "--refresh-dependencies"}, {}, vim.schedule_wrap(function(obj)
+		if obj.code ~= 0 then
+			vim.notify("Refreshing dependencies failed: " .. obj.stderr, vim.log.levels.ERROR, {})
+			return
+		end
+		vim.notify("Refreshing dependencies sucessfully", vim.log.levels.INFO, {})
+	end))
+end
+
 local function setup()
 	vim.api.nvim_create_user_command("AndroidBuildRelease", function()
 		build_release()
@@ -304,8 +384,16 @@ local function setup()
 		build_and_run()
 	end, {})
 
+	vim.api.nvim_create_user_command("AndroidUninstall", function()
+		uninstall()
+	end, {})
+
 	vim.api.nvim_create_user_command("AndroidClean", function()
 		clean()
+	end, {})
+
+	vim.api.nvim_create_user_command("AndroidRefreshDependencies", function()
+		refresh_dependencies()
 	end, {})
 
 	vim.api.nvim_create_user_command("LaunchAvd", function()
@@ -317,6 +405,8 @@ return {
 	setup = setup,
 	build_release = build_release,
 	build_and_run = build_and_run,
+	refresh_dependencies = refresh_dependencies,
 	launch_avd = launch_avd,
 	clean = clean,
+	uninstall = uninstall
 }
