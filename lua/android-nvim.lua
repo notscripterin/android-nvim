@@ -1,3 +1,5 @@
+local window = nil
+
 local function trim(s)
 	return s:gsub("^%s*(.-)%s*$", "%1")
 end
@@ -25,6 +27,47 @@ local function find_gradlew(directory)
 	return { cwd = cwd, gradlew = trim(result) }
 end
 
+local apply_to_window = function(buf, data)
+	if window == nil or data == nil then
+		return 0, 0
+	end
+
+	local result = {}
+	for line in data:gmatch("[^\n]+") do
+		result[#result + 1] = line
+	end
+
+	local buffer_lines = vim.api.nvim_buf_line_count(buf) or 0
+
+	vim.api.nvim_set_option_value("modifiable", true, {buf=buf})
+	vim.api.nvim_buf_set_lines(buf, buffer_lines, buffer_lines + #data, false, result)
+	vim.api.nvim_set_option_value("modifiable", false, {buf=buf})
+
+	vim.api.nvim_win_set_cursor(window, {buffer_lines + #result, 0})
+
+	return buffer_lines, buffer_lines + #result
+end
+
+local function create_build_window()
+	local buf = vim.api.nvim_create_buf(false, true)
+	vim.api.nvim_set_option_value("modifiable", false, {buf=buf})
+	vim.api.nvim_set_option_value("buftype", 'nofile', {buf=buf})
+	vim.api.nvim_set_option_value("bufhidden", 'wipe', {buf=buf})
+
+	if window ~= nil and vim.api.nvim_win_is_valid(window) then
+		vim.api.nvim_win_close(window, true)
+	end
+
+	window = vim.api.nvim_open_win(buf, true, {
+		split="below",
+		width=vim.o.columns,
+		height=10,
+		style="minimal"
+	})
+
+	return buf
+end
+
 local function build_release()
 	local gradlew = find_gradlew().gradlew
 	if gradlew == nil then
@@ -45,18 +88,27 @@ local function build_release()
 		end)
 	)
 
-	vim.system(
-		{ gradlew, "assembleRelease" },
-		{ text = true },
-		vim.schedule_wrap(function(obj)
-			timer:stop()
-			if obj.code == 0 then
-				vim.notify("Build successful.", vim.log.levels.INFO, {})
-			else
-				vim.notify("Build failed: " .. obj.stderr, vim.log.levels.ERROR, {})
+	local buf = create_build_window()
+
+	vim.system({ gradlew, "assembleRelease" }, {
+		text = true,
+		stdout = vim.schedule_wrap(function(_, data)
+			apply_to_window(buf, data)
+		end),
+		stderr = vim.schedule_wrap(function(_, data)
+			local start, finish = apply_to_window(buf, data)
+			for line = start, finish do
+				vim.api.nvim_buf_add_highlight(buf, -1, "Error", line, 0, -1)
 			end
 		end)
-	)
+	}, vim.schedule_wrap(function(obj)
+		timer:stop()
+		if obj.code == 0 then
+			vim.notify("Build successful.", vim.log.levels.INFO, {})
+		else
+			vim.notify("Build failed: " .. obj.stderr, vim.log.levels.ERROR, {})
+		end
+	end))
 end
 
 local function clean()
@@ -173,38 +225,34 @@ local function find_main_activity(adb, device_id, application_id)
 	return trim(result)
 end
 
+
 local function build_and_install(root_dir, gradle, adb, device)
-	local buf = vim.api.nvim_create_buf(false, true)
-	vim.api.nvim_set_option_value("modifiable", false, {buf=buf})
-	vim.api.nvim_set_option_value("buftype", 'nofile', {buf=buf})
-	vim.api.nvim_set_option_value("bufhidden", 'wipe', {buf=buf})
+	local buf = create_build_window()
 
-	local win = vim.api.nvim_open_win(buf, true, {
-		relative="editor",
-		width=vim.o.columns,
-		height=10,
-		row=vim.o.lines - 9,
-		col=0,
-		style="minimal"
-	})
+	local time_passed = 0
+	local timer = vim.uv.new_timer()
+	timer:start(
+		1000,
+		1000,
+		vim.schedule_wrap(function()
+			time_passed = time_passed + 1
+			vim.notify("Building for " .. time_passed .. " seconds.", vim.log.levels.INFO, {})
+		end)
+	)
 
-	local output = {}
-	vim.system({ gradle, "assembleDebug" }, { text = true, stdout = vim.schedule_wrap(function(_, data)
-		if data == nil then
-			return
-		end
-
-		for line in data:gmatch("[^\n]+") do
-			output[#output + 1] = line
-		end
-
-		vim.api.nvim_set_option_value("modifiable", true, {buf=buf})
-		vim.api.nvim_buf_set_lines(buf, 0, -1, false, output)
-		vim.api.nvim_set_option_value("modifiable", false, {buf=buf})
-
-		local buffer_lines = vim.api.nvim_buf_line_count(buf)
-		vim.api.nvim_win_set_cursor(win, {buffer_lines, 0})
-	end)}, vim.schedule_wrap(function(obj)
+	vim.system({ gradle, "assembleDebug" }, {
+		text = true,
+		stdout = vim.schedule_wrap(function(_, data)
+			apply_to_window(buf, data)
+		end),
+		stderr = vim.schedule_wrap(function(_, data)
+			local start, finish = apply_to_window(buf, data)
+			for line = start, finish do
+				vim.api.nvim_buf_add_highlight(buf, -1, "Error", line, 0, -1)
+			end
+		end)
+	}, vim.schedule_wrap(function(obj)
+		timer:stop()
 		if obj.code ~= 0 then
 			vim.notify("Build failed.", vim.log.levels.ERROR, {})
 			return
@@ -240,7 +288,7 @@ local function build_and_install(root_dir, gradle, adb, device)
 
 		vim.notify("Successfully built and launched the application!", vim.log.levels.INFO, {})
 
-		vim.api.nvim_win_close(win, true)
+		vim.api.nvim_win_close(window, true)
 	end))
 end
 

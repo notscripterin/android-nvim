@@ -44,3 +44,4 @@ The plugin does provide some user commands for ease of use:
 | AndroidRun          | Builds and runs debug version of your application | 
 | AndroidClean        | Cleans the build folder of the application        |
 | LaunchAvd           | Launches the selected virtual device              |
+| AndroidUninstall    | Uninstall the current application from device     |
