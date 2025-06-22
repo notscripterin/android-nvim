@@ -155,14 +155,21 @@ local function get_device_names(adb, ids)
 	local devices = {}
 	for i = 1, #ids do
 		local id = ids[i]
-		local obj = vim.system({adb, "-s", id, "emu", "avd", "name"}, {}):wait()
+		local cmd
+		if id:match("^emulator") then
+			cmd = { adb, "-s", id, "emu", "avd", "name" }
+		else
+			cmd = { adb, "-s", id, "shell", "getprop", "ro.product.model" }
+		end
+		local obj = vim.system(cmd, {}):wait()
 		if obj.code == 0 then
 			local read = obj.stdout or ""
-			local device_name = read:match('^(.-)\n') or read
+			local device_name = read:match("^(.-)\n") or read
 			table.insert(devices, device_name)
 		end
 	end
 	return devices
+
 end
 
 local function get_running_devices(adb)
