@@ -7,6 +7,10 @@ local function trim(s)
 	return s:gsub("^%s*(.-)%s*$", "%1")
 end
 
+local function trim_all(s)
+    return s:gsub("%s+", "")
+end
+
 local function find_gradlew(directory)
 	local cwd = directory
 	if cwd == nil then
@@ -433,49 +437,13 @@ local function refresh_dependencies()
 	end))
 end
 
-local function get_templates()
-    local templates = {}
-
-    local templates_dir
-    for _, path in ipairs(vim.api.nvim_list_runtime_paths()) do
-        if path:match "android%-nvim" then
-            templates_dir = path .. "/templates"
-            break
-        end
+local function move_files(from_dir, to_dir)
+    local files = vim.fn.readdir(from_dir)
+    for _, file in ipairs(files) do
+        local from = from_dir .. "/" .. file
+        local to = to_dir .. "/" .. file
+        vim.fn.rename(from, to)
     end
-
-    for _, path in ipairs(vim.fn.globpath(templates_dir, "*", 0, 1)) do
-        if vim.fn.isdirectory(path) == 1 then
-            table.insert(templates, {
-                name = vim.fn.fnamemodify(path, ":t"),
-                path = path,
-            })
-        end
-    end
-
-    if vim.g.android_templates_dir then
-        for _, path in ipairs(vim.fn.globpath(vim.g.android_templates_dir, "*", 0, 1)) do
-            if vim.fn.isdirectory(path) == 1 then
-                table.insert(templates, {
-                    name = vim.fn.fnamemodify(path, ":t"),
-                    path = path,
-                })
-            end
-        end
-    end
-
-    if vim.g.android_templates then
-        for _, path in ipairs(vim.g.android_templates) do
-            if vim.fn.isdirectory(path) == 1 then
-                table.insert(templates, {
-                    name = vim.fn.fnamemodify(path, ":t"),
-                    path = path,
-                })
-            end
-        end
-    end
-
-    return templates
 end
 
 local function match_and_replace(match, replace, file)
@@ -497,6 +465,40 @@ local function match_and_replace_dir(match, replace, dir)
     for _, file in ipairs(files) do
         match_and_replace(match, replace, file)
     end
+end
+
+local function get_templates()
+    local templates = {}
+    local template_sources = {}
+
+    local templates_dir
+    for _, path in ipairs(vim.api.nvim_list_runtime_paths()) do
+        if path:match "android%-nvim" then
+            templates_dir = path .. "/templates"
+            break
+        end
+    end
+
+    if templates_dir then
+        vim.list_extend(template_sources, vim.fn.globpath(templates_dir, "*", 0, 1))
+    end
+    if vim.g.android_templates_dir then
+        vim.list_extend(template_sources, vim.fn.globpath(vim.g.android_templates_dir, "*", 0, 1))
+    end
+    if vim.g.android_templates then
+        vim.list_extend(template_sources, vim.g.android_templates)
+    end
+
+    for _, path in ipairs(template_sources) do
+        if vim.fn.isdirectory(path) == 1 then
+            table.insert(templates, {
+                name = vim.fn.fnamemodify(path, ":t"),
+                path = path,
+            })
+        end
+    end
+
+    return templates
 end
 
 local function get_main_activity_path(path)
@@ -528,12 +530,15 @@ local function get_package_name(main_activity_path)
     end
 end
 
-local function update_template(name, package, template, project_root)
+local function update_template(name, package, template)
     local root = name
+    local name_trimmed = trim_all(name)
+    local template_name_trimmed = trim_all(template.name)
     local package_path = package:gsub("%.", "/")
     local template_main_activity_path = get_main_activity_path(template.path)
     local template_package = get_package_name(template_main_activity_path)
     local template_package_path = template_package:gsub("%.", "/")
+    local src_path = root .. "/app/src"
     local main_path = root .. "/app/src/main/java/" .. package_path
     local test_path = root .. "/app/src/test/java/" .. package_path
     local android_test_path = root .. "/app/src/androidTest/java/" .. package_path
@@ -543,13 +548,9 @@ local function update_template(name, package, template, project_root)
     local settings_file = root .. "/settings.gradle.kts"
     local gradle_file = root .. "/app/build.gradle.kts"
     local manifest_file = root .. "/app/src/main/AndroidManifest.xml"
-    local mainactivity_file = main_path .. "/MainActivity.kt"
-    local theme_file = main_path .. "/ui/theme/Theme.kt"
-    local example_unit_test_file = test_path .. "/ExampleUnitTest.kt"
-    local example_instrumented_test_file = android_test_path .. "/ExampleInstrumentedTest.kt"
 
-    local theme = name .. "Theme"
-    local template_theme = template.name .. "Theme"
+    local theme = name_trimmed .. "Theme"
+    local template_theme = template_name_trimmed .. "Theme"
     local theme_import = package .. ".ui.theme." .. theme
     local template_theme_import = template_package .. ".ui.theme." .. template_theme
 
@@ -557,24 +558,9 @@ local function update_template(name, package, template, project_root)
     vim.fn.mkdir(test_path, "p")
     vim.fn.mkdir(android_test_path, "p")
 
-    local files = vim.fn.readdir(template_path)
-    for _, file in ipairs(files) do
-        local from = template_path .. "/" .. file
-        local to = main_path .. "/" .. file
-        vim.fn.rename(from, to)
-    end
-    local test_files = vim.fn.readdir(template_test_path)
-    for _, file in ipairs(test_files) do
-        local from = template_test_path .. "/" .. file
-        local to = test_path .. "/" .. file
-        vim.fn.rename(from, to)
-    end
-    local android_test_files = vim.fn.readdir(template_android_test_path)
-    for _, file in ipairs(android_test_files) do
-        local from = template_android_test_path .. "/" .. file
-        local to = android_test_path .. "/" .. file
-        vim.fn.rename(from, to)
-    end
+    move_files(template_path, main_path)
+    move_files(template_test_path, test_path)
+    move_files(template_android_test_path, android_test_path)
 
     vim.fn.delete(template_path, "d")
     vim.fn.delete(template_test_path, "d")
@@ -582,16 +568,11 @@ local function update_template(name, package, template, project_root)
 
     match_and_replace(template.name, name, settings_file)
     match_and_replace(template_package, package, gradle_file)
-    match_and_replace(template.name, name, manifest_file)
-    match_and_replace(template_package, package, mainactivity_file)
-    match_and_replace(template_package, package, theme_file)
-    match_and_replace(template_package, package, example_unit_test_file)
-    match_and_replace(template_package, package, example_instrumented_test_file)
-    match_and_replace(template_theme_import, theme_import, mainactivity_file)
-    match_and_replace(template_theme, theme, mainactivity_file)
-    match_and_replace(template_theme, theme, theme_file)
+    match_and_replace(template_name_trimmed, name_trimmed, manifest_file)
 
-    match_and_replace_dir(template_package, package, root .. "/app/src")
+    match_and_replace_dir(template_package, package, src_path)
+    match_and_replace_dir(template_theme, theme, src_path)
+    match_and_replace_dir(template_theme_import, theme_import, src_path)
 end
 
 local function create_compose_from_template(name, package, template, project_root)
@@ -621,11 +602,11 @@ local function create_new_compose()
         if not template_name then
             return
         end
-        local name = input { prompt = "App name: " }
+        local name = trim(input { prompt = "App name: " })
         if not name then
             return
         end
-        local package = input { prompt = "Package (e.g., org.example.myapp): " }
+        local package = trim_all(input { prompt = "Package (e.g., org.example.myapp): " })
         if not package then
             return
         end
@@ -649,7 +630,6 @@ local function create_new_compose()
             vim.notify("MainActivity.kt not found", vim.log.levels.WARN)
         end
 
-        vim.notify(main_activity_path, vim.log.levels.INFO)
         vim.notify("Project created at ./" .. name, vim.log.levels.INFO)
     end)()
 end
