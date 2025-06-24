@@ -492,6 +492,13 @@ local function match_and_replace(match, replace, file)
     end
 end
 
+local function match_and_replace_dir(match, replace, dir)
+    local files = vim.fn.glob(dir .. "/**/*.kt", true, true)
+    for _, file in ipairs(files) do
+        match_and_replace(match, replace, file)
+    end
+end
+
 local function get_main_activity_path(path)
     local java_root = path .. "/app/src/main/java"
 
@@ -507,28 +514,21 @@ local function get_main_activity_path(path)
                 return full_path
             end
         end
-        return nil
     end
 
     return search(java_root)
 end
 
 local function get_package_name(main_activity_path)
-    if not main_activity_path then
-        return nil
-    end
-
     for _, line in ipairs(vim.fn.readfile(main_activity_path)) do
         local pkg = line:match "^%s*package%s+([%w%.]+)"
         if pkg then
             return pkg
         end
     end
-
-    return nil
 end
 
-local function update_template(name, package, template)
+local function update_template(name, package, template, project_root)
     local root = name
     local package_path = package:gsub("%.", "/")
     local template_main_activity_path = get_main_activity_path(template.path)
@@ -540,7 +540,6 @@ local function update_template(name, package, template)
     local template_path = root .. "/app/src/main/java/" .. template_package_path
     local template_test_path = root .. "/app/src/test/java/" .. template_package_path
     local template_android_test_path = root .. "/app/src/androidTest/java/" .. template_package_path
-    vim.notify(template_package_path, vim.log.levels.WARN)
     local settings_file = root .. "/settings.gradle.kts"
     local gradle_file = root .. "/app/build.gradle.kts"
     local manifest_file = root .. "/app/src/main/AndroidManifest.xml"
@@ -550,7 +549,7 @@ local function update_template(name, package, template)
     local example_instrumented_test_file = android_test_path .. "/ExampleInstrumentedTest.kt"
 
     local theme = name .. "Theme"
-    local template_theme = template .. "Theme"
+    local template_theme = template.name .. "Theme"
     local theme_import = package .. ".ui.theme." .. theme
     local template_theme_import = template_package .. ".ui.theme." .. template_theme
 
@@ -581,9 +580,9 @@ local function update_template(name, package, template)
     vim.fn.delete(template_test_path, "d")
     vim.fn.delete(template_android_test_path, "d")
 
-    match_and_replace(template, name, settings_file)
+    match_and_replace(template.name, name, settings_file)
     match_and_replace(template_package, package, gradle_file)
-    match_and_replace(template, name, manifest_file)
+    match_and_replace(template.name, name, manifest_file)
     match_and_replace(template_package, package, mainactivity_file)
     match_and_replace(template_package, package, theme_file)
     match_and_replace(template_package, package, example_unit_test_file)
@@ -591,14 +590,11 @@ local function update_template(name, package, template)
     match_and_replace(template_theme_import, theme_import, mainactivity_file)
     match_and_replace(template_theme, theme, mainactivity_file)
     match_and_replace(template_theme, theme, theme_file)
+
+    match_and_replace_dir(template_package, package, root .. "/app/src")
 end
 
-local function create_compose_from_template(name, package, template)
-    local project_root = vim.fn.getcwd() .. "/" .. name
-    vim.notify(vim.inspect(template), vim.log.levels.INFO, {
-        title = "🧩 Template",
-    })
-
+local function create_compose_from_template(name, package, template, project_root)
     if vim.fn.isdirectory(project_root) == 1 then
         vim.notify("Project already exists at: " .. project_root, vim.log.levels.WARN)
         return
@@ -641,7 +637,8 @@ local function create_new_compose()
             return
         end
 
-        create_compose_from_template(name, package, template)
+        local project_root = vim.fn.getcwd() .. "/" .. name
+        create_compose_from_template(name, package, template, project_root)
 
         local main_activity_path = get_main_activity_path(project_root)
 
