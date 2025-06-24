@@ -434,15 +434,48 @@ local function refresh_dependencies()
 end
 
 local function get_templates()
-    local templates_root
+    local templates = {}
+
+    local templates_dir
     for _, path in ipairs(vim.api.nvim_list_runtime_paths()) do
         if path:match "android%-nvim" then
-            templates_root = path .. "/templates"
+            templates_dir = path .. "/templates"
             break
         end
     end
-    local templates = vim.fn.readdir(templates_root)
-    return templates, templates_root
+
+    for _, path in ipairs(vim.fn.globpath(templates_dir, "*", 0, 1)) do
+        if vim.fn.isdirectory(path) == 1 then
+            table.insert(templates, {
+                name = vim.fn.fnamemodify(path, ":t"),
+                path = path,
+            })
+        end
+    end
+
+    if vim.g.android_templates_dir then
+        for _, path in ipairs(vim.fn.globpath(vim.g.android_templates_dir, "*", 0, 1)) do
+            if vim.fn.isdirectory(path) == 1 then
+                table.insert(templates, {
+                    name = vim.fn.fnamemodify(path, ":t"),
+                    path = path,
+                })
+            end
+        end
+    end
+
+    if vim.g.android_templates then
+        for _, path in ipairs(vim.g.android_templates) do
+            if vim.fn.isdirectory(path) == 1 then
+                table.insert(templates, {
+                    name = vim.fn.fnamemodify(path, ":t"),
+                    path = path,
+                })
+            end
+        end
+    end
+
+    return templates
 end
 
 local function match_and_replace(match, replace, file)
@@ -495,9 +528,11 @@ local function get_package_name(main_activity_path)
     return nil
 end
 
-local function update_template(name, package, template, template_package)
+local function update_template(name, package, template)
     local root = name
     local package_path = package:gsub("%.", "/")
+    local template_main_activity_path = get_main_activity_path(template.path)
+    local template_package = get_package_name(template_main_activity_path)
     local template_package_path = template_package:gsub("%.", "/")
     local main_path = root .. "/app/src/main/java/" .. package_path
     local test_path = root .. "/app/src/test/java/" .. package_path
@@ -505,6 +540,7 @@ local function update_template(name, package, template, template_package)
     local template_path = root .. "/app/src/main/java/" .. template_package_path
     local template_test_path = root .. "/app/src/test/java/" .. template_package_path
     local template_android_test_path = root .. "/app/src/androidTest/java/" .. template_package_path
+    vim.notify(template_package_path, vim.log.levels.WARN)
     local settings_file = root .. "/settings.gradle.kts"
     local gradle_file = root .. "/app/build.gradle.kts"
     local manifest_file = root .. "/app/src/main/AndroidManifest.xml"
@@ -557,33 +593,56 @@ local function update_template(name, package, template, template_package)
     match_and_replace(template_theme, theme, theme_file)
 end
 
-local function create_new_compose()
-    local templates, templates_root = get_templates()
+local function create_compose_from_template(name, package, template)
+    local project_root = vim.fn.getcwd() .. "/" .. name
+    vim.notify(vim.inspect(template), vim.log.levels.INFO, {
+        title = "🧩 Template",
+    })
 
-    if #templates == 0 then
-        vim.notify("No templates found in: " .. templates_root, vim.log.levels.ERROR)
+    if vim.fn.isdirectory(project_root) == 1 then
+        vim.notify("Project already exists at: " .. project_root, vim.log.levels.WARN)
         return
     end
 
-    async.run(function()
-        local template = select(templates, { prompt = "Select a template: " })
-        local name = input { prompt = "App name: " }
-        local package = input { prompt = "Package (e.g., org.example.myapp): " }
-        return name, package, template
-    end, function(name, package, template)
-        local project_root = vim.fn.getcwd() .. "/" .. name
-        local template_root = templates_root .. "/" .. template
-        local template_main_activity_path = get_main_activity_path(template_root)
-        local template_package = get_package_name(template_main_activity_path)
+    vim.fn.mkdir(project_root, "p")
+    vim.fn.system("cp -a " .. template.path .. "/. " .. project_root)
+    update_template(name, package, template)
+end
 
-        if vim.fn.isdirectory(project_root) == 1 then
-            vim.notify("Project already exists at: " .. project_root, vim.log.levels.WARN)
+local function create_new_compose()
+    local templates = get_templates()
+    local template_names = vim.tbl_map(function(t)
+        return t.name
+    end, templates)
+
+    if #templates == 0 then
+        vim.notify("No templates found in: ", vim.log.levels.ERROR)
+        return
+    end
+
+    async.void(function()
+        local template_name = select(template_names, { prompt = "Select a template: " })
+        if not template_name then
+            return
+        end
+        local name = input { prompt = "App name: " }
+        if not name then
+            return
+        end
+        local package = input { prompt = "Package (e.g., org.example.myapp): " }
+        if not package then
             return
         end
 
-        vim.fn.mkdir(project_root, "p")
-        vim.fn.system("cp -a " .. template_root .. "/. " .. project_root)
-        update_template(name, package, template, template_package)
+        local template = vim.tbl_filter(function(t)
+            return t.name == template_name
+        end, templates)[1]
+        if not template then
+            return
+        end
+
+        create_compose_from_template(name, package, template)
+
         local main_activity_path = get_main_activity_path(project_root)
 
         vim.cmd("cd " .. vim.fn.fnameescape(project_root))
@@ -592,10 +651,10 @@ local function create_new_compose()
         else
             vim.notify("MainActivity.kt not found", vim.log.levels.WARN)
         end
-        
+
         vim.notify(main_activity_path, vim.log.levels.INFO)
         vim.notify("Project created at ./" .. name, vim.log.levels.INFO)
-    end)
+    end)()
 end
 
 local function setup()
