@@ -3,7 +3,7 @@ local M = {}
 local levels = vim.log.levels
 
 local function notify(msg, level)
-    vim.notify(string.format("[android-nvim] %s", msg), level)
+    vim.notify(msg, level, { title = "android-nvim" })
 end
 
 M.info = function(msg)
